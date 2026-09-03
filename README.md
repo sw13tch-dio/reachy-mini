@@ -80,13 +80,20 @@ You don't have to choose. **Reachy Mini Control works fine on campus Wi-Fi — y
 just have to tell it where the robot is**, because its auto-detect relies on the
 mDNS that the network blocks.
 
-1. Run this dashboard first and read the **Address** (e.g. `10.1.221.118`).
-2. Open Reachy Mini Control. Ignore the three tiles — *Reachy WiFi* will show a
-   red dot and say **"No robot detected"**. That is the mDNS failure, not a
-   broken robot.
-3. Type the address into the **"Connect by IP address…"** box at the bottom.
-   The greyed-out **Start** button lights up.
-4. Press **Start**. It connects immediately.
+The dashboard does the handoff for you. Once it's connected, a card appears with
+the robot's address and an **"Open the app & copy the address"** button. Press it
+and the address is on your clipboard with the app already opening. Then:
+
+1. Ignore the three tiles — *Reachy WiFi* will show a red dot and say
+   **"No robot detected"**. That is the mDNS failure, not a broken robot.
+2. Click the **"Connect by IP address…"** box at the bottom and paste
+   (<kbd>Ctrl</kbd>+<kbd>V</kbd>).
+3. The greyed-out **Start** button lights up. Press it.
+
+⚠️ **The app does not remember the address.** We checked — nothing is written to
+its config or local storage. You have to paste it in *every single time*. So the
+habit to teach is: **dashboard first, app second.** The address will always be
+sitting there waiting for you.
 
 Use whichever fits the moment: this dashboard to *find* the robot and prove it
 moves, the official app for the things it does better — camera preview, speaker

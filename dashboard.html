@@ -90,6 +90,22 @@
 
   .hint { font-size:13.5px; color:var(--muted); margin-top:12px; }
 
+  .lead { margin:0 0 15px; font-size:14.5px; color:var(--muted); }
+  .lead b { color:var(--ink); }
+
+  .addr {
+    display:flex; align-items:center; gap:11px; flex-wrap:wrap;
+    background:var(--idle-bg); border-radius:11px; padding:12px 14px;
+  }
+  .addr code {
+    flex:1 1 auto; font:600 21px/1.2 ui-monospace, Menlo, Consolas, monospace;
+    color:var(--ink); letter-spacing:.01em; user-select:all;
+  }
+  .steps { margin:16px 0 16px; padding-left:22px; }
+  .steps li { margin-bottom:8px; font-size:14.5px; color:var(--muted); }
+  .steps b { color:var(--ink); }
+  #openAppBtn { width:100%; }
+
   details { margin-top:14px; }
   summary { cursor:pointer; font-size:14px; color:var(--muted); font-weight:600; }
   details[open] summary { margin-bottom:10px; }
@@ -153,6 +169,42 @@
     </div>
   </div>
 
+  <div class="card" id="handoffCard" hidden>
+    <h2>Want the camera, sound and apps?</h2>
+    <p class="lead">
+      Those live in the official <b>Reachy Mini Control</b> app. It can&rsquo;t
+      find the robot by itself on this network &mdash; but it works fine once you
+      give it the address. Copy the address, open the app, paste it in.
+    </p>
+
+    <div class="addr">
+      <code id="addrText">&mdash;</code>
+      <button class="btn" id="copyBtn" onclick="copyAddr()">Copy address</button>
+    </div>
+
+    <ol class="steps">
+      <li>Press <b>Open the app</b> below &mdash; the address is copied for you.</li>
+      <li>Ignore the three tiles. <i>Reachy WiFi</i> will show a red dot and say
+          &ldquo;No robot detected&rdquo;. That is expected here, and is not a fault.</li>
+      <li>Click the <b>&ldquo;Connect by IP address&hellip;&rdquo;</b> box at the
+          bottom and paste (<b>Ctrl</b>+<b>V</b>).</li>
+      <li>The greyed-out <b>Start</b> button lights up. Press it.</li>
+    </ol>
+
+    <button class="btn" id="openAppBtn" onclick="openApp(this)">
+      Open the app &amp; copy the address
+    </button>
+    <div class="hint" id="appMissing" hidden>
+      Reachy Mini Control doesn&rsquo;t seem to be installed on this computer.
+      Get it from <b>hf.co/reachy-mini</b>.
+    </div>
+    <div class="hint">
+      You have to paste the address <b>every time</b> you open the app &mdash; it
+      doesn&rsquo;t remember it. Run this dashboard first and the address will
+      always be here waiting.
+    </div>
+  </div>
+
   <div class="card">
     <details>
       <summary>Nothing happening? Read this first</summary>
@@ -195,11 +247,48 @@ function toast(msg) {
   t._h = setTimeout(() => t.classList.remove('show'), 2600);
 }
 
+const ALWAYS_ON = ['searchBtn', 'copyBtn', 'openAppBtn'];
+
 function setButtons(connected) {
   document.querySelectorAll('.card .btn').forEach(b => {
     if (b.id === 'searchBtn') return;
+    // copy / open-app only need a known address, not an idle robot
+    if (ALWAYS_ON.includes(b.id)) { b.disabled = !connected; return; }
     b.disabled = !connected || busy;
   });
+}
+
+async function copyAddr() {
+  const ip = document.getElementById('addrText').textContent.trim();
+  if (!ip || ip === '—') return;
+  try {
+    await navigator.clipboard.writeText(ip);
+    toast('Address copied — paste it into the app');
+  } catch (e) {
+    // clipboard blocked: select it so Ctrl+C works
+    const r = document.createRange();
+    r.selectNodeContents(document.getElementById('addrText'));
+    const sel = window.getSelection();
+    sel.removeAllRanges(); sel.addRange(r);
+    toast('Press Ctrl+C to copy the selected address');
+  }
+}
+
+async function openApp(btn) {
+  await copyAddr();
+  const label = btn.textContent;
+  btn.textContent = 'Opening…';
+  btn.disabled = true;
+  try {
+    const res = await fetch('/dash/open-app', { method: 'POST' });
+    const j = await res.json();
+    toast(res.ok ? 'App opening — paste the address into the IP box'
+                 : (j.error || 'Could not open the app'));
+  } catch (e) {
+    toast('Could not reach the dashboard server.');
+  }
+  btn.textContent = label;
+  btn.disabled = false;
 }
 
 async function refresh() {
@@ -243,9 +332,14 @@ async function refresh() {
       stat('Errors',    r.errors ?? '?',  (r.errors === 0) ? 'good' : 'bad'),
       stat('Version',   r.version || '?', '')
     ].join('');
+    document.getElementById('handoffCard').hidden = false;
+    document.getElementById('addrText').textContent = s.ip;
+    document.getElementById('appMissing').hidden = (s.control_app !== false);
+    document.getElementById('openAppBtn').hidden = (s.control_app === false);
     setButtons(true);
   } else {
     card.hidden = true;
+    document.getElementById('handoffCard').hidden = true;
     setButtons(false);
   }
 

@@ -31,6 +31,8 @@ import ipaddress
 import json
 import os
 import socket
+import subprocess
+import sys
 import threading
 import time
 import urllib.request
@@ -272,6 +274,37 @@ def do_sleep(ip):
     robot_call(ip, "POST", "/api/motors/set_mode/disabled")
 
 
+# ------------------------------------------------- hand off to the Pollen app
+
+APP_PATHS = [
+    r"C:\Program Files\Reachy Mini Control\reachy-mini-control.exe",
+    r"C:\Program Files (x86)\Reachy Mini Control\reachy-mini-control.exe",
+    os.path.expandvars(r"%LOCALAPPDATA%\Programs\Reachy Mini Control"
+                       r"\reachy-mini-control.exe"),
+    "/Applications/Reachy Mini Control.app",
+]
+
+
+def find_control_app():
+    for p in APP_PATHS:
+        if os.path.exists(p):
+            return p
+    return None
+
+
+def open_control_app():
+    """Launch Reachy Mini Control so the user can paste the address in."""
+    p = find_control_app()
+    if not p:
+        raise RuntimeError("Reachy Mini Control isn't installed in the usual place.")
+    if sys.platform == "darwin":
+        subprocess.Popen(["open", p])
+    else:
+        subprocess.Popen([p], close_fds=True,
+                         creationflags=getattr(subprocess, "DETACHED_PROCESS", 0))
+    return p
+
+
 # --------------------------------------------------------------- web server
 
 class Handler(BaseHTTPRequestHandler):
@@ -325,6 +358,7 @@ class Handler(BaseHTTPRequestHandler):
                         pass
                 except Exception:
                     s["robot"] = {"reachable": False}
+            s["control_app"] = bool(find_control_app())
             return self._send(200, s)
 
         return self._send(404, {"error": "not found"})
@@ -337,6 +371,15 @@ class Handler(BaseHTTPRequestHandler):
             threading.Thread(target=discovery_thread, args=(None,),
                              daemon=True).start()
             return self._send(200, {"ok": True})
+
+        if self.path == "/dash/open-app":
+            try:
+                p = open_control_app()
+                log("Opened Reachy Mini Control (%s)" % p)
+                return self._send(200, {"ok": True, "path": p})
+            except Exception as e:
+                log("Could not open Reachy Mini Control: %s" % e)
+                return self._send(500, {"error": str(e)})
 
         if not ip:
             return self._send(409, {"error": "Reachy isn't connected yet."})
