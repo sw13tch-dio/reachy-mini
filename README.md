@@ -74,6 +74,27 @@ over Bluetooth, so even on a network that blocks all discovery, we can just
 
 ---
 
+## Making the official app work too
+
+You don't have to choose. **Reachy Mini Control works fine on campus Wi-Fi — you
+just have to tell it where the robot is**, because its auto-detect relies on the
+mDNS that the network blocks.
+
+1. Run this dashboard first and read the **Address** (e.g. `10.1.221.118`).
+2. Open Reachy Mini Control. Ignore the three tiles — *Reachy WiFi* will show a
+   red dot and say **"No robot detected"**. That is the mDNS failure, not a
+   broken robot.
+3. Type the address into the **"Connect by IP address…"** box at the bottom.
+   The greyed-out **Start** button lights up.
+4. Press **Start**. It connects immediately.
+
+Use whichever fits the moment: this dashboard to *find* the robot and prove it
+moves, the official app for the things it does better — camera preview, speaker
+and microphone, installing and launching apps, Hugging Face login, and system
+updates.
+
+---
+
 ## The three gotchas that cost us a semester
 
 **1. Motors default to `disabled`, and that failure is silent.**
