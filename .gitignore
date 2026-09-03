@@ -1,0 +1,6 @@
+.reachy_ip
+server_out.txt
+server_err.txt
+__pycache__/
+*.pyc
+.venv/

@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Reachy Mini Dashboard</title>
+<style>
+  :root {
+    --bg:#f4f6f8; --card:#ffffff; --ink:#12171c; --muted:#5d6b79;
+    --line:#dde3ea; --accent:#2f6df6; --accent-ink:#ffffff;
+    --ok:#12855b; --ok-bg:#e6f6ee; --warn:#9a6200; --warn-bg:#fdf3e0;
+    --bad:#c02b2b; --bad-bg:#fdeaea; --idle:#6b7785; --idle-bg:#eef1f5;
+    --radius:14px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg:#11151a; --card:#1a2028; --ink:#e9eef4; --muted:#9aa8b6;
+      --line:#2a333d; --accent:#5b8dff; --accent-ink:#0b1220;
+      --ok:#5fd6a2; --ok-bg:#122b22; --warn:#f0bf6a; --warn-bg:#2d2416;
+      --bad:#ff8b8b; --bad-bg:#2e1a1a; --idle:#9aa8b6; --idle-bg:#222a33;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg:#11151a; --card:#1a2028; --ink:#e9eef4; --muted:#9aa8b6;
+    --line:#2a333d; --accent:#5b8dff; --accent-ink:#0b1220;
+    --ok:#5fd6a2; --ok-bg:#122b22; --warn:#f0bf6a; --warn-bg:#2d2416;
+    --bad:#ff8b8b; --bad-bg:#2e1a1a; --idle:#9aa8b6; --idle-bg:#222a33;
+  }
+
+  * { box-sizing:border-box; }
+  body {
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    padding:28px 20px 60px;
+  }
+  .wrap { max-width:760px; margin:0 auto; }
+
+  header { margin-bottom:22px; }
+  h1 { font-size:26px; margin:0 0 4px; letter-spacing:-.02em; }
+  .sub { color:var(--muted); font-size:14.5px; }
+
+  .card {
+    background:var(--card); border:1px solid var(--line);
+    border-radius:var(--radius); padding:20px; margin-bottom:16px;
+  }
+
+  /* ---- status banner ---- */
+  .status { display:flex; align-items:center; gap:14px; }
+  .dot { width:14px; height:14px; border-radius:50%; flex:none; background:var(--idle); }
+  .dot.searching { background:var(--warn); animation:pulse 1.1s ease-in-out infinite; }
+  .dot.found { background:var(--ok); }
+  .dot.failed { background:var(--bad); }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.25} }
+  .status-text { flex:1; min-width:0; }
+  .status-main { font-size:18px; font-weight:600; }
+  .status-sub { color:var(--muted); font-size:13.5px; margin-top:2px; }
+
+  /* ---- health grid ---- */
+  .grid {
+    display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr));
+    gap:12px; margin-top:4px;
+  }
+  .stat { background:var(--idle-bg); border-radius:10px; padding:11px 13px; }
+  .stat .k { font-size:11.5px; text-transform:uppercase; letter-spacing:.06em;
+             color:var(--muted); font-weight:600; }
+  .stat .v { font-size:19px; font-weight:650; margin-top:3px;
+             font-variant-numeric:tabular-nums; }
+  .stat.good .v { color:var(--ok); }
+  .stat.bad  .v { color:var(--bad); }
+  .stat.warn .v { color:var(--warn); }
+
+  /* ---- buttons ---- */
+  .btn {
+    font:inherit; font-weight:600; cursor:pointer;
+    border:1px solid var(--line); background:var(--card); color:var(--ink);
+    border-radius:11px; padding:13px 18px; transition:.15s;
+  }
+  .btn:hover:not(:disabled) { border-color:var(--accent); }
+  .btn:disabled { opacity:.42; cursor:not-allowed; }
+  .btn.primary {
+    background:var(--accent); color:var(--accent-ink); border-color:var(--accent);
+    font-size:18px; padding:18px 24px; width:100%;
+  }
+  .btn.primary:hover:not(:disabled) { filter:brightness(1.08); }
+  .row { display:flex; flex-wrap:wrap; gap:10px; margin-top:12px; }
+  .row .btn { flex:1 1 140px; }
+
+  h2 { font-size:13px; text-transform:uppercase; letter-spacing:.07em;
+       color:var(--muted); margin:0 0 13px; font-weight:700; }
+
+  .hint { font-size:13.5px; color:var(--muted); margin-top:12px; }
+
+  details { margin-top:14px; }
+  summary { cursor:pointer; font-size:14px; color:var(--muted); font-weight:600; }
+  details[open] summary { margin-bottom:10px; }
+  .tips li { margin-bottom:9px; font-size:14.5px; }
+  .tips b { color:var(--ink); }
+
+  pre.log {
+    background:var(--idle-bg); border-radius:10px; padding:12px;
+    font:12.5px/1.5 ui-monospace, Menlo, Consolas, monospace;
+    max-height:230px; overflow:auto; margin:0; white-space:pre-wrap;
+    color:var(--muted);
+  }
+
+  #toast {
+    position:fixed; left:50%; bottom:26px; transform:translateX(-50%) translateY(20px);
+    background:var(--ink); color:var(--bg); padding:12px 20px; border-radius:10px;
+    font-size:14.5px; font-weight:600; opacity:0; pointer-events:none;
+    transition:.22s; max-width:90vw;
+  }
+  #toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>Reachy Mini</h1>
+    <div class="sub">Connect to the robot and check that it&rsquo;s working.</div>
+  </header>
+
+  <div class="card">
+    <div class="status">
+      <div class="dot" id="dot"></div>
+      <div class="status-text">
+        <div class="status-main" id="statusMain">Starting up&hellip;</div>
+        <div class="status-sub" id="statusSub"></div>
+      </div>
+      <button class="btn" id="searchBtn" onclick="search()">Search again</button>
+    </div>
+  </div>
+
+  <div class="card" id="healthCard" hidden>
+    <h2>How it&rsquo;s doing</h2>
+    <div class="grid" id="health"></div>
+  </div>
+
+  <div class="card">
+    <h2>Test that it works</h2>
+    <button class="btn primary" id="helloBtn" onclick="act('hello', this)" disabled>
+      Say hello &mdash; wake up and wiggle
+    </button>
+    <div class="row">
+      <button class="btn" onclick="act('wake', this)"   disabled>Wake up</button>
+      <button class="btn" onclick="act('wiggle', this)" disabled>Wiggle antennas</button>
+      <button class="btn" onclick="act('sleep', this)"  disabled>Go to sleep</button>
+      <button class="btn" onclick="act('limp', this)"   disabled>Let go (limp)</button>
+    </div>
+    <div class="hint">
+      If the robot moves, everything is working. &ldquo;Let go&rdquo; switches the motors
+      off so you can move the head by hand &mdash; do that before packing it away.
+    </div>
+  </div>
+
+  <div class="card">
+    <details>
+      <summary>Nothing happening? Read this first</summary>
+      <ul class="tips">
+        <li><b>Is the robot powered on?</b> Press OFF, wait 5 seconds, press ON.
+            Give it about 2 minutes to boot before searching again.</li>
+        <li><b>Is it on the same Wi&#8209;Fi as this laptop?</b> Reachy can only join
+            normal password networks (WPA2). It <em>cannot</em> join AirOrangeX or
+            eduroam. On a new network you have to set it up over Bluetooth first.</li>
+        <li><b>Robot found but it won&rsquo;t move?</b> The motors are probably off.
+            Press &ldquo;Wake up&rdquo; &mdash; that switches them on. Commands are
+            silently ignored while the motors are disabled.</li>
+        <li><b>Nowhere to connect at all?</b> The robot can make its own Wi&#8209;Fi
+            network. Trigger it over Bluetooth, then join
+            <b>reachy&#8209;mini&#8209;ap</b> from this laptop. That works anywhere,
+            with no router involved.</li>
+        <li><b>Still stuck?</b> Close the Reachy Mini Control app if it&rsquo;s open
+            &mdash; it holds the Bluetooth radio and blocks this dashboard from
+            using it.</li>
+      </ul>
+    </details>
+
+    <details>
+      <summary>Activity log</summary>
+      <pre class="log" id="log"></pre>
+    </details>
+  </div>
+
+</div>
+<div id="toast"></div>
+
+<script>
+let busy = false;
+
+function toast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(t._h);
+  t._h = setTimeout(() => t.classList.remove('show'), 2600);
+}
+
+function setButtons(connected) {
+  document.querySelectorAll('.card .btn').forEach(b => {
+    if (b.id === 'searchBtn') return;
+    b.disabled = !connected || busy;
+  });
+}
+
+async function refresh() {
+  let s;
+  try {
+    s = await (await fetch('/dash/state')).json();
+  } catch (e) {
+    return; // server closed; leave the last state on screen
+  }
+
+  const dot = document.getElementById('dot');
+  dot.className = 'dot ' + s.phase;
+  document.getElementById('statusMain').textContent = s.message || '';
+
+  let sub = '';
+  if (s.phase === 'found') {
+    sub = 'Found via ' + s.method + '.';
+    if (s.robot && !s.robot.reachable) sub = 'Lost contact with the robot.';
+  } else if (s.phase === 'searching') {
+    sub = 'This can take up to a minute on a big network.';
+  } else if (s.phase === 'failed') {
+    sub = 'Open the troubleshooting section below.';
+  }
+  document.getElementById('statusSub').textContent = sub;
+
+  const searchBtn = document.getElementById('searchBtn');
+  searchBtn.disabled = (s.phase === 'searching');
+  searchBtn.textContent = (s.phase === 'searching') ? 'Searching…' : 'Search again';
+
+  const card = document.getElementById('healthCard');
+  const r = s.robot;
+  if (s.phase === 'found' && r && r.reachable) {
+    card.hidden = false;
+    const motorsOn = r.motors === 'enabled';
+    const hzOk = r.hz >= 40;
+    document.getElementById('health').innerHTML = [
+      stat('Address',   s.ip,                              'good'),
+      stat('Daemon',    r.state || '?',   r.state === 'running' ? 'good' : 'bad'),
+      stat('Motors',    motorsOn ? 'on' : 'off',  motorsOn ? 'good' : 'warn'),
+      stat('Speed',     (r.hz ?? '?') + ' Hz',    hzOk ? 'good' : 'warn'),
+      stat('Errors',    r.errors ?? '?',  (r.errors === 0) ? 'good' : 'bad'),
+      stat('Version',   r.version || '?', '')
+    ].join('');
+    setButtons(true);
+  } else {
+    card.hidden = true;
+    setButtons(false);
+  }
+
+  document.getElementById('log').textContent = (s.log || []).join('\n');
+}
+
+function stat(k, v, cls) {
+  return '<div class="stat ' + cls + '"><div class="k">' + k +
+         '</div><div class="v">' + v + '</div></div>';
+}
+
+async function act(what, btn) {
+  if (busy) return;
+  busy = true;
+  const label = btn.textContent;
+  btn.textContent = 'Working…';
+  setButtons(false);
+  try {
+    const res = await fetch('/dash/' + what, { method: 'POST' });
+    const j = await res.json();
+    toast(res.ok ? 'Done — did the robot move?' : ('Failed: ' + (j.error || res.status)));
+  } catch (e) {
+    toast('Could not reach the dashboard server.');
+  }
+  btn.textContent = label;
+  busy = false;
+  refresh();
+}
+
+async function search() {
+  await fetch('/dash/search', { method: 'POST' });
+  refresh();
+}
+
+refresh();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>
