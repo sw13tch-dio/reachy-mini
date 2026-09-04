@@ -154,6 +154,28 @@ python reachy_dash.py --port 8800        # different dashboard port
 python reachy_dash.py --no-browser       # don't auto-open
 ```
 
+## Gestures
+
+`gestures.py` is a small vocabulary of named, clamped motions — usable on its
+own or as a building block:
+
+```bash
+python gestures.py 10.1.221.118 nod      # also: shake tilt perk droop wiggle
+```
+
+```python
+from gestures import enable_motors, nod, perk, rest
+enable_motors(ip)
+try:
+    perk(ip); nod(ip, times=3)
+finally:
+    rest(ip)          # always return to rest
+```
+
+It speaks **millimetres and degrees**, clamps every value against the published
+joint limits before sending, and converts to the daemon's metres/radians in one
+place. See [`HARDWARE.md`](HARDWARE.md) for the limits and why they matter.
+
 ## Direct SSH to the robot
 
 ```bash
