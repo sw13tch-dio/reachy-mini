@@ -122,47 +122,39 @@ def _try_mdns():
 
 
 def _try_ble():
-    """Ask the robot over Bluetooth what its Wi-Fi address is."""
-    try:
-        import asyncio
-        from bleak import BleakClient, BleakScanner
-    except ImportError:
-        log("  (Bluetooth search needs 'bleak' - run: pip install bleak)")
+    """One Bluetooth pass: get the robot's address, or learn it needs setup.
+
+    This used to have its own copy of the bleak calls, which meant two
+    unsynchronised BLE code paths in one process. Windows permits exactly
+    one BLE client at a time, so they knocked each other over - a
+    TimeoutError here and a silent empty result there. Everything now goes
+    through robot_ops, which serialises on a single lock.
+    """
+    units = robot_ops.ble_list(timeout=14.0)
+    if not units:
+        log("  no robots advertising over Bluetooth")
         return None
 
-    async def go():
-        dev = None
-        for _ in range(2):
-            for d in await BleakScanner.discover(timeout=12.0):
-                if d.name and BLE_NAME.lower() in d.name.lower():
-                    dev = d
-                    break
-            if dev:
-                break
-        if not dev:
-            return None
-        log("  Bluetooth: found %s, asking for its address..." % dev.address)
-        async with BleakClient(dev, timeout=30.0,
-                               winrt={"use_cached_services": False}) as c:
-            txt = (await c.read_gatt_char(BLE_NET_CHAR)).decode("utf-8", "replace")
-            log("  Bluetooth says: %s" % txt.strip())
-            for tok in txt.replace("[", " ").replace("]", " ").split():
-                try:
-                    ipaddress.ip_address(tok)
-                    return tok
-                except ValueError:
-                    continue
-        return None
+    setup_needed = None
+    for u in units:
+        log("  Bluetooth: found %s (%s dBm), asking for its address..."
+            % (u["address"], u["rssi"]))
+        st = robot_ops.ble_status(u["address"], tries=2)
+        if not st:
+            log("    could not read it this time")
+            continue
+        log("    it says: %s" % st.get("network"))
+        if robot_ops.in_hotspot_mode(st):
+            setup_needed = (u["address"], st.get("network"))
+            continue
+        ip = robot_ops.ip_from_ble(st)
+        if ip and is_robot(ip):
+            return ip
+        if ip:
+            log("    daemon not answering at %s yet" % ip)
 
-    try:
-        ip = asyncio.run(go())
-    except Exception as e:
-        log("  Bluetooth search failed: %s" % type(e).__name__)
-        return None
-    if ip and is_robot(ip):
-        return ip
-    if ip:
-        log("  Bluetooth gave %s but the daemon isn't answering there." % ip)
+    if setup_needed:
+        raise NeedsSetup(*setup_needed)
     return None
 
 
@@ -181,7 +173,10 @@ def _local_subnets():
             ip = info[4][0]
             if ip.startswith("127.") or ip.startswith("169.254."):
                 continue
-            for slot, mask in enumerate((24, 18, 16)):
+            # 192.168.137.x is Windows' own hotspot/ICS adapter. Its /24 is
+            # worth a look; widening it to a /16 is 65,000 wasted probes.
+            masks = (24,) if ip.startswith("192.168.137.") else (24, 18, 16)
+            for slot, mask in enumerate(masks):
                 tiers[slot].append(
                     str(ipaddress.ip_network("%s/%d" % (ip, mask), strict=False)))
     except Exception:
@@ -207,6 +202,33 @@ def _try_sweep():
     return None
 
 
+class NeedsSetup(Exception):
+    """Raised when a robot is found but has no WiFi - stops the search."""
+
+    def __init__(self, address, network):
+        super().__init__(address)
+        self.address = address
+        self.network = network
+
+
+def _hotspot_check():
+    """If Bluetooth says the robot is in setup mode, sweeping is pointless.
+
+    A robot serving its own AP lives at 10.42.0.1 on a network this laptop
+    is not on. No amount of LAN scanning will ever reach it, so stop and
+    send the user to the Setup tab instead of grinding through 163,000
+    addresses (which is what this used to do).
+    """
+    units = robot_ops.ble_list(timeout=14.0)
+    for u in units:
+        st = robot_ops.ble_status(u["address"], tries=2)
+        if robot_ops.in_hotspot_mode(st):
+            log("  %s is in SETUP MODE (%s) - stopping here" %
+                (u["address"], (st or {}).get("network")))
+            raise NeedsSetup(u["address"], (st or {}).get("network"))
+    return None
+
+
 def discover(hint=None):
     set_state(phase="searching", message="Looking for Reachy...")
     if hint:
@@ -223,6 +245,8 @@ def discover(hint=None):
         log("Trying %s..." % label)
         try:
             ip = fn()
+        except NeedsSetup:
+            raise
         except Exception as e:
             log("  %s failed: %s" % (label, type(e).__name__))
             ip = None
@@ -232,7 +256,14 @@ def discover(hint=None):
 
 
 def discovery_thread(hint):
-    ip, method = discover(hint)
+    try:
+        ip, method = discover(hint)
+    except NeedsSetup as ns:
+        set_state(phase="needs_setup", ip=None, method=None,
+                  message="Robot found over Bluetooth, but it has no WiFi yet.")
+        log("Robot %s needs first-time WiFi setup (%s)"
+            % (ns.address, ns.network))
+        return
     if ip:
         try:
             with open(CACHE, "w") as f:
@@ -355,7 +386,14 @@ def setup_scan():
 
 
 def setup_networks():
-    """Join the robot's AP and ask which networks it can see."""
+    """Join the robot's AP and ask which networks it can see.
+
+    Deliberately does NOT require a Bluetooth scan first. Joining the AP and
+    getting an answer from the daemon on it is itself proof that a robot is
+    there and needs setup - and it is far more reliable than BLE, whose GATT
+    connect can wedge after repeated attempts and stay wedged until the robot
+    is power-cycled.
+    """
     home = wifi_setup.current_ssid()
     setup_set(stage="joining", home_ssid=home,
               message="Joining the robot's setup network...")
@@ -423,21 +461,37 @@ def setup_finish():
     setup_set(ap_joined=False)
     log("Setup: laptop now on %s" % wifi_setup.current_ssid())
 
-    setup_set(message="Asking the robot for its new address over Bluetooth...")
-    time.sleep(6)
+    setup_set(message="Looking for the robot on your network...")
+    time.sleep(8)
     new_ip = None
-    for attempt in range(4):
-        found = robot_ops.ble_list(timeout=14.0)
-        for d in found:
-            st = robot_ops.ble_status(d["address"], tries=1)
-            ip = robot_ops.ip_from_ble(st)
-            if ip and not robot_ops.in_hotspot_mode(st):
-                new_ip = ip
+
+    # mDNS first - instant when it works (home networks), useless on campus.
+    log("  trying reachy-mini.local ...")
+    new_ip = _try_mdns()
+
+    # Bluetooth next: exact answer, but its GATT can be wedged. One try only.
+    if not new_ip:
+        log("  asking over Bluetooth ...")
+        try:
+            for d in robot_ops.ble_list(timeout=12.0):
+                st = robot_ops.ble_status(d["address"], tries=1)
+                ip = robot_ops.ip_from_ble(st)
+                if ip and not robot_ops.in_hotspot_mode(st):
+                    new_ip = ip
+                    break
+        except Exception as e:
+            log("  bluetooth unavailable: %s" % type(e).__name__)
+
+    # Sweep last. Slower, but it does not care whether BLE is healthy.
+    if not new_ip:
+        log("  sweeping the network instead (Bluetooth did not answer) ...")
+        setup_set(message="Scanning your network for the robot...")
+        for attempt in range(2):
+            new_ip = _try_sweep()
+            if new_ip:
                 break
-        if new_ip:
-            break
-        log("  attempt %d: robot still not on the network" % (attempt + 1))
-        time.sleep(8)
+            log("  not there yet; the robot may still be joining")
+            time.sleep(15)
 
     if not new_ip:
         setup_set(stage="error",
@@ -651,6 +705,22 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(500, {"error": str(e)})
 
 
+def _already_running(port):
+    """True if a dashboard is already answering on this port."""
+    try:
+        s = socket.socket()
+        s.settimeout(1.0)
+        rc = s.connect_ex(("127.0.0.1", port))
+        s.close()
+        if rc != 0:
+            return False
+        with urllib.request.urlopen(
+                "http://127.0.0.1:%d/dash/state" % port, timeout=3) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ip", help="skip discovery, use this robot address")
@@ -670,8 +740,28 @@ def main():
     print()
     print("-" * 60)
 
-    threading.Thread(target=discovery_thread, args=(a.ip,), daemon=True).start()
+    # Refuse to start a second copy. Two instances fight over the one
+    # Bluetooth radio and BOTH fail - one with a TimeoutError, one silently
+    # returning nothing.
+    #
+    # Catching the bind error is not enough on Windows: http.server sets
+    # SO_REUSEADDR, which here permits two live sockets on the same port
+    # instead of failing the second one. So probe for a real listener.
+    if _already_running(a.port):
+        print()
+        print("   A dashboard is already running on port %d." % a.port)
+        print("   Open http://localhost:%d - don't start a second copy." % a.port)
+        print()
+        print("   (Two copies fight over the Bluetooth radio and both fail.)")
+        print()
+        try:
+            input("   Press Enter to close this window. ")
+        except EOFError:
+            pass
+        return
+
     srv = ThreadingHTTPServer(("127.0.0.1", a.port), Handler)
+    threading.Thread(target=discovery_thread, args=(a.ip,), daemon=True).start()
     if not a.no_browser:
         threading.Timer(1.0, lambda: webbrowser.open(
             "http://localhost:%d" % a.port)).start()

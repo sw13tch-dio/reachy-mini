@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -50,6 +50,7 @@
   .dot.searching { background:var(--warn); animation:pulse 1.1s ease-in-out infinite; }
   .dot.found { background:var(--ok); }
   .dot.failed { background:var(--bad); }
+  .dot.needs_setup { background:var(--warn); }
   @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.25} }
   .status-text { flex:1; min-width:0; }
   .status-main { font-size:18px; font-weight:600; }
@@ -212,28 +213,36 @@
         whole time &mdash; it runs on your own machine.
       </div>
 
-      <button class="btn primary big" id="scanBtn" onclick="setupScan()">
-        Step 1 &mdash; Find robots over Bluetooth
+      <h3>Step 1 &mdash; Join the robot and read its WiFi list</h3>
+      <button class="btn primary big" id="netBtn" onclick="setupNetworks()">
+        Join robot&rsquo;s network &amp; fetch its WiFi list
       </button>
       <div class="hint">
-        Bluetooth works even when the robot has no WiFi at all, so this finds
-        robots that nothing else can see.
+        Works straight away on a robot that is powered on and not yet set up.
+        If the robot answers, that alone proves it is there &mdash; no
+        Bluetooth needed.
       </div>
 
-      <div id="robotsFound" hidden>
-        <h3>Robots in range</h3>
-        <div id="robotList"></div>
-      </div>
-
-      <div id="step2" hidden>
-        <h3>Step 2 &mdash; Join the robot and read its WiFi list</h3>
-        <button class="btn primary big" id="netBtn" onclick="setupNetworks()">
-          Join robot&rsquo;s network &amp; fetch WiFi list
+      <details>
+        <summary>Optional: check over Bluetooth first</summary>
+        <div class="hint" style="margin-bottom:10px">
+          Bluetooth reports each robot&rsquo;s exact state, which is useful when
+          you have more than one. It is also the flakier of the two paths
+          &mdash; its connection can wedge until the robot is power-cycled
+          &mdash; so it is optional, not required.
+        </div>
+        <button class="btn" id="scanBtn" onclick="setupScan()">
+          Scan over Bluetooth
         </button>
-      </div>
+        <div id="robotsFound" hidden>
+          <div id="robotList" style="margin-top:12px"></div>
+        </div>
+      </details>
+
+      <div id="step2" hidden></div>
 
       <div id="step3" hidden>
-        <h3>Step 3 &mdash; Give it your WiFi</h3>
+        <h3>Step 2 &mdash; Give it your WiFi</h3>
         <label class="fld" for="ssidSel">Network the robot should join</label>
         <select id="ssidSel"></select>
         <div class="hint" id="ssidHint"></div>
@@ -256,7 +265,7 @@
       </div>
 
       <div id="step4" hidden>
-        <h3>Step 4 &mdash; Come back to your network</h3>
+        <h3>Step 3 &mdash; Come back to your network</h3>
         <button class="btn primary big" id="finishBtn" onclick="setupFinish()">
           Reconnect this laptop &amp; find the robot
         </button>
@@ -483,6 +492,8 @@ async function refresh() {
     if (s.robot && !s.robot.reachable) sub = 'Lost contact with the robot.';
   } else if (s.phase === 'searching') {
     sub = 'A wide network scan can take a couple of minutes.';
+  } else if (s.phase === 'needs_setup') {
+    sub = 'It is serving its own network and needs WiFi. Start at Step 1 below.';
   } else if (s.phase === 'failed') {
     sub = 'If it is a new robot, use Step 1 on the Setup tab.';
   }
@@ -491,12 +502,12 @@ async function refresh() {
 
   const sb = el('searchBtn');
   sb.disabled = (s.phase === 'searching');
-  sb.textContent = (s.phase === 'searching') ? 'Searching…' : 'Search again';
+  sb.textContent = (s.phase === 'searching') ? 'Searchingâ€¦' : 'Search again';
 
   const wasNull = !connectedIp;
   connectedIp = (s.phase === 'found' && s.robot && s.robot.reachable) ? s.ip : null;
 
-  el('addrText').textContent = connectedIp || '—';
+  el('addrText').textContent = connectedIp || 'â€”';
   el('copyBtn').disabled = !connectedIp;
   el('openAppBtn').disabled = !connectedIp || (s.control_app === false);
   el('renameBtn').disabled = !connectedIp;
@@ -519,7 +530,7 @@ function setupNote(html, kind) {
 async function setupScan() {
   const b = el('scanBtn');
   b.disabled = true;
-  b.innerHTML = '<span class="spin"></span> Scanning Bluetooth (about 30s)…';
+  b.innerHTML = '<span class="spin"></span> Scanning Bluetooth (about 30s)â€¦';
   setupNote('Listening for robots. This takes about half a minute.');
   try {
     const r = await (await post('/dash/setup/scan')).json();
@@ -527,26 +538,26 @@ async function setupScan() {
     if (!r.robots || !r.robots.length) {
       setupNote('<b>No robots found over Bluetooth.</b> Check it is powered on ' +
                 'and give it 2 minutes after switching on. Also close Reachy ' +
-                'Mini Control if it is open — it holds the Bluetooth radio.', 'bad');
+                'Mini Control if it is open â€” it holds the Bluetooth radio.', 'bad');
       el('robotsFound').hidden = true;
       el('step2').hidden = true;
     } else {
       list.innerHTML = r.robots.map(x => {
         const needs = x.needs_setup;
         const state = needs
-          ? '<span style="color:var(--warn)">in setup mode — needs WiFi</span>'
+          ? '<span style="color:var(--warn)">in setup mode â€” needs WiFi</span>'
           : ('on the network at <b>' + (x.ip || '?') + '</b>');
         return '<div class="robotrow"><div class="nm">' + state +
-               '<br><code>' + x.address + '  ·  signal ' + x.rssi + ' dBm</code>' +
+               '<br><code>' + x.address + '  Â·  signal ' + x.rssi + ' dBm</code>' +
                '<br><code>' + (x.network || '') + '</code></div></div>';
       }).join('');
       el('robotsFound').hidden = false;
       const anyNeeds = r.robots.some(x => x.needs_setup);
       el('step2').hidden = !anyNeeds;
       if (anyNeeds) {
-        setupNote('Found a robot in <b>setup mode</b>. Continue to step 2.', 'warn');
+        setupNote('Found a robot in <b>setup mode</b>. Use Step 1 above.', 'warn');
       } else {
-        setupNote('All robots found are already on a network — no WiFi setup ' +
+        setupNote('All robots found are already on a network â€” no WiFi setup ' +
                   'needed. Press <b>Search again</b> at the top to connect.', 'ok');
       }
     }
@@ -554,14 +565,14 @@ async function setupScan() {
     setupNote('Scan failed: ' + e, 'bad');
   }
   b.disabled = false;
-  b.textContent = 'Step 1 — Find robots over Bluetooth';
+  b.textContent = 'Step 1 â€” Find robots over Bluetooth';
 }
 
 async function setupNetworks() {
   const b = el('netBtn');
   b.disabled = true;
-  b.innerHTML = '<span class="spin"></span> Joining robot… your internet will drop';
-  setupNote('Joining <b>reachy-mini-ap</b>. Your internet is dropping now — ' +
+  b.innerHTML = '<span class="spin"></span> Joining robotâ€¦ your internet will drop';
+  setupNote('Joining <b>reachy-mini-ap</b>. Your internet is dropping now â€” ' +
             'this page keeps working.', 'warn');
   try {
     const r = await (await post('/dash/setup/networks')).json();
@@ -573,7 +584,7 @@ async function setupNetworks() {
       sel.innerHTML = (r.networks || []).map(n => {
         const bad = enterprise.includes(n);
         return '<option value="' + n + '"' + (bad ? ' disabled' : '') + '>' +
-               n + (bad ? '  (enterprise — robot cannot join)' : '') + '</option>';
+               n + (bad ? '  (enterprise â€” robot cannot join)' : '') + '</option>';
       }).join('');
       const pref = (r.networks || []).find(n => n === (r.home_ssid || ''));
       if (pref) sel.value = pref;
@@ -588,7 +599,7 @@ async function setupNetworks() {
     setupNote('Failed: ' + e, 'bad');
   }
   b.disabled = false;
-  b.textContent = 'Join robot’s network & fetch WiFi list';
+  b.textContent = 'Join robotâ€™s network & fetch WiFi list';
 }
 
 function togglePw() {
@@ -603,13 +614,13 @@ async function setupConnect() {
   if (!pw) { toast('Type the WiFi password'); return; }
   const b = el('sendBtn');
   b.disabled = true;
-  b.innerHTML = '<span class="spin"></span> Sending…';
+  b.innerHTML = '<span class="spin"></span> Sendingâ€¦';
   try {
     const r = await (await post('/dash/setup/connect',
                                 { ssid: ssid, password: pw })).json();
     if (r.ok) {
       setupNote('<b>Robot accepted the credentials.</b> It is switching to ' +
-                ssid + ' now. Continue to step 4.', 'ok');
+                ssid + ' now. Continue to Step 3.', 'ok');
       el('step4').hidden = false;
       el('pw').value = '';
     } else {
@@ -626,7 +637,7 @@ async function setupConnect() {
 async function setupFinish() {
   const b = el('finishBtn');
   b.disabled = true;
-  b.innerHTML = '<span class="spin"></span> Reconnecting and looking…';
+  b.innerHTML = '<span class="spin"></span> Reconnecting and lookingâ€¦';
   setupNote('Putting this laptop back on your WiFi, then asking the robot for ' +
             'its new address. Up to a minute.', 'warn');
   try {
@@ -634,7 +645,7 @@ async function setupFinish() {
     if (r.ok) {
       setupNote('<b>Done.</b> The robot is on your network at <b>' + r.ip +
                 '</b>' + (r.daemon_reachable ? ' and answering.' : ' (daemon not ' +
-                'answering yet — give it a moment).') +
+                'answering yet â€” give it a moment).') +
                 '<br>Now give it a name below, so it never gets confused with ' +
                 'the other one.', 'ok');
       el('newName').value = el('newName').value || 'reachy-mini-b';
@@ -656,7 +667,7 @@ async function doRename() {
   const name = el('newName').value.trim();
   if (!name) { toast('Type a name first'); return; }
   const b = el('renameBtn');
-  b.disabled = true; b.innerHTML = '<span class="spin"></span> Renaming…';
+  b.disabled = true; b.innerHTML = '<span class="spin"></span> Renamingâ€¦';
   try {
     const r = await (await post('/dash/rename',
                                 { ip: connectedIp, name: name })).json();
@@ -674,7 +685,7 @@ async function doReboot() {
   if (!confirm('Reboot the robot? It will be unreachable for about 2 minutes.'))
     return;
   const b = el('rebootBtn');
-  b.disabled = true; b.innerHTML = '<span class="spin"></span> Rebooting…';
+  b.disabled = true; b.innerHTML = '<span class="spin"></span> Rebootingâ€¦';
   try {
     const r = await (await post('/dash/reboot', { ip: connectedIp })).json();
     el('renameMsg').innerHTML = '<div class="note ' + (r.ok ? 'ok' : 'bad') + '">' +
@@ -688,7 +699,7 @@ async function doReboot() {
 /* ---------------------------------------------------- diagnostics */
 function stat(k, v, cls) {
   return '<div class="stat ' + (cls || '') + '"><div class="k">' + k +
-         '</div><div class="v">' + (v === null || v === undefined ? '—' : v) +
+         '</div><div class="v">' + (v === null || v === undefined ? 'â€”' : v) +
          '</div></div>';
 }
 
@@ -700,7 +711,7 @@ async function loadDiag() {
     el('cameraNote').innerHTML = '<div class="note">Connect a robot first.</div>';
     return;
   }
-  g.innerHTML = stat('Loading', '…');
+  g.innerHTML = stat('Loading', 'â€¦');
   let d;
   try { d = await (await fetch('/dash/diag')).json(); }
   catch (e) { g.innerHTML = stat('Error', String(e), 'bad'); return; }
@@ -714,21 +725,21 @@ async function loadDiag() {
   const hzOk = d.loop_hz >= 40;
   g.innerHTML = [
     stat('Address', d.ip, 'good'),
-    stat('Hostname', d.hostname || '—',
+    stat('Hostname', d.hostname || 'â€”',
          (d.hostname && d.hostname !== 'reachy-mini') ? 'good' : 'warn'),
     stat('Daemon', d.daemon_state, d.daemon_state === 'running' ? 'good' : 'bad'),
     stat('Motors', motorsOn ? 'on' : (d.motors || 'off'), motorsOn ? 'good' : 'warn'),
-    stat('Loop speed', d.loop_hz ? d.loop_hz + ' Hz' : '—', hzOk ? 'good' : 'warn'),
+    stat('Loop speed', d.loop_hz ? d.loop_hz + ' Hz' : 'â€”', hzOk ? 'good' : 'warn'),
     stat('Loop errors', d.loop_errors, (d.loop_errors === 0) ? 'good' : 'bad'),
     stat('Software', d.version),
-    stat('WiFi mode', d.wifi_mode || '—',
+    stat('WiFi mode', d.wifi_mode || 'â€”',
          d.wifi_mode === 'hotspot' ? 'warn' : 'good'),
-    stat('On network', d.wifi_network || '—'),
-    stat('Hardware ID', d.hardware_id ? d.hardware_id.slice(0, 8) + '…' : '—')
+    stat('On network', d.wifi_network || 'â€”'),
+    stat('Hardware ID', d.hardware_id ? d.hardware_id.slice(0, 8) + 'â€¦' : 'â€”')
   ].join('');
 
   el('diagWhen').textContent = 'Read at ' + new Date().toLocaleTimeString() +
-    (d.timestamp ? '  ·  robot clock ' + d.timestamp : '');
+    (d.timestamp ? '  Â·  robot clock ' + d.timestamp : '');
 
   const h = d.head_pose_human;
   el('poseGrid').innerHTML = h ? [
@@ -736,11 +747,11 @@ async function loadDiag() {
     stat('Head Y', h.y_mm + ' mm'),
     stat('Head Z', h.z_mm + ' mm',
          Math.abs(h.z_mm) > 40 ? 'warn' : 'good'),
-    stat('Roll', h.roll_deg + '°'),
-    stat('Pitch', h.pitch_deg + '°'),
-    stat('Yaw', h.yaw_deg + '°'),
-    stat('Body yaw', (d.body_yaw_deg !== null ? d.body_yaw_deg + '°' : '—')),
-    stat('Antennas', d.antennas_deg ? d.antennas_deg.join('° / ') + '°' : '—')
+    stat('Roll', h.roll_deg + 'Â°'),
+    stat('Pitch', h.pitch_deg + 'Â°'),
+    stat('Yaw', h.yaw_deg + 'Â°'),
+    stat('Body yaw', (d.body_yaw_deg !== null ? d.body_yaw_deg + 'Â°' : 'â€”')),
+    stat('Antennas', d.antennas_deg ? d.antennas_deg.join('Â° / ') + 'Â°' : 'â€”')
   ].join('') : stat('Pose', 'unavailable', 'warn');
 
   const rows = [
@@ -795,7 +806,7 @@ async function loadApps() {
     el('appCurrent').innerHTML = '<div class="note">Connect a robot first.</div>';
     return;
   }
-  list.innerHTML = '<div class="hint"><span class="spin"></span> Loading…</div>';
+  list.innerHTML = '<div class="hint"><span class="spin"></span> Loadingâ€¦</div>';
   try {
     const r = await (await fetch('/dash/apps')).json();
     const cur = r.current;
@@ -834,7 +845,7 @@ async function startApp(btn, name) {
 
 async function stopApp(btn) {
   const label = btn.textContent;
-  btn.disabled = true; btn.innerHTML = '<span class="spin"></span> Stopping…';
+  btn.disabled = true; btn.innerHTML = '<span class="spin"></span> Stoppingâ€¦';
   try {
     const r = await (await post('/dash/apps/stop', { ip: connectedIp })).json();
     toast(r.ok ? 'Stopped' : 'Nothing to stop');
@@ -848,13 +859,13 @@ async function act(what, btn) {
   if (busy) return;
   busy = true;
   const label = btn.textContent;
-  btn.textContent = 'Working…';
+  btn.textContent = 'Workingâ€¦';
   document.querySelectorAll('.btn.mv').forEach(b => b.disabled = true);
   el('helloBtn').disabled = true;
   try {
     const res = await post('/dash/' + what);
     const j = await res.json();
-    toast(res.ok ? 'Done — did the robot move?' :
+    toast(res.ok ? 'Done â€” did the robot move?' :
                    ('Failed: ' + (j.error || res.status)));
   } catch (e) { toast('Could not reach the dashboard server.'); }
   btn.textContent = label;
@@ -866,7 +877,7 @@ async function copyAddr() {
   if (!connectedIp) return;
   try {
     await navigator.clipboard.writeText(connectedIp);
-    toast('Address copied — paste it into the app');
+    toast('Address copied â€” paste it into the app');
   } catch (e) {
     const r = document.createRange();
     r.selectNodeContents(el('addrText'));
@@ -878,11 +889,11 @@ async function copyAddr() {
 async function openApp(btn) {
   await copyAddr();
   const label = btn.textContent;
-  btn.textContent = 'Opening…'; btn.disabled = true;
+  btn.textContent = 'Openingâ€¦'; btn.disabled = true;
   try {
     const res = await post('/dash/open-app');
     const j = await res.json();
-    toast(res.ok ? 'App opening — paste the address into the IP box'
+    toast(res.ok ? 'App opening â€” paste the address into the IP box'
                  : (j.error || 'Could not open the app'));
   } catch (e) { toast('Could not reach the dashboard server.'); }
   btn.textContent = label; btn.disabled = false;
@@ -895,3 +906,5 @@ setInterval(refresh, 2500);
 </script>
 </body>
 </html>
+
+

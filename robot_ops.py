@@ -8,11 +8,17 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
 
 PORT = 8000
+
+# Windows allows exactly one BLE client operation at a time. Two scans at once
+# do not queue - they both fail, one with a TimeoutError and one by returning
+# nothing. Every BLE call in this module goes through this lock.
+BLE_LOCK = threading.Lock()
 
 # The robot's custom GATT service. Discovered by enumerating a live unit.
 BLE_NAME_MATCH = "reachy"
@@ -52,23 +58,34 @@ def api(ip, method, path, body=None, timeout=15):
 
 # ------------------------------------------------------------- Bluetooth
 
-async def _ble_scan_all(timeout=16.0):
-    from bleak import BleakScanner
-    devs = await BleakScanner.discover(timeout=timeout, return_adv=True)
-    out = []
-    for addr, (d, adv) in devs.items():
-        name = d.name or adv.local_name or ""
-        if BLE_NAME_MATCH in name.lower():
-            out.append({"address": addr, "name": name, "rssi": adv.rssi})
-    return sorted(out, key=lambda r: -(r["rssi"] or -999))
+def _ble_helper(args, timeout):
+    """Run ble_helper.py as a subprocess and parse its one line of JSON.
+
+    See ble_helper.py for why this is a subprocess and not a function call.
+    """
+    import os
+    import subprocess
+    import sys
+    here = os.path.dirname(os.path.abspath(__file__))
+    cmd = [sys.executable, os.path.join(here, "ble_helper.py")] + [str(a) for a in args]
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        line = (p.stdout or "").strip().splitlines()
+        if not line:
+            return {"ok": False, "error": (p.stderr or "no output")[-300:]}
+        return json.loads(line[-1])
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "bluetooth helper timed out"}
+    except Exception as e:
+        return {"ok": False, "error": "%s: %s" % (type(e).__name__, e)}
 
 
 def ble_list(timeout=16.0):
     """Which Reachy units are advertising right now."""
-    try:
-        return asyncio.run(_ble_scan_all(timeout))
-    except Exception:
-        return []
+    with BLE_LOCK:
+        res = _ble_helper(["list", timeout], timeout + 45)
+    return res.get("robots", []) if res.get("ok") else []
 
 
 async def _ble_read(address, timeout=16.0):
@@ -91,15 +108,20 @@ async def _ble_read(address, timeout=16.0):
 
 
 def ble_status(address, tries=3):
-    """Read a robot's network state over Bluetooth. Works with no WiFi."""
-    for _ in range(tries):
-        try:
-            r = asyncio.run(_ble_read(address))
-            if r:
-                return r
-        except Exception:
-            pass
+    """Read a robot's network state over Bluetooth. Works with no WiFi.
+
+    Advertising is intermittent, so a single miss means nothing - the helper
+    retries internally.
+    """
+    with BLE_LOCK:
+        res = _ble_helper(["status", address, 16.0, tries], 40 * tries + 40)
+    if res.get("ok"):
+        return res.get("status")
+    LAST_BLE_ERROR["message"] = res.get("error")
     return None
+
+
+LAST_BLE_ERROR = {"message": None}
 
 
 def ip_from_ble(status):
