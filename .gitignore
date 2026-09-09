@@ -4,3 +4,4 @@ server_err.txt
 __pycache__/
 *.pyc
 .venv/
+_demo/

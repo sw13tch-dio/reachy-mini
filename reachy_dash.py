@@ -39,6 +39,9 @@ import urllib.request
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import robot_ops
+import wifi_setup
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 CACHE = os.path.join(HERE, ".reachy_ip")
 ROBOT_PORT = 8000
@@ -164,22 +167,31 @@ def _try_ble():
 
 
 def _local_subnets():
-    """Which subnets to sweep, based on this machine's own addresses."""
-    small, big = [], []
+    """Which subnets to sweep, based on this machine's own addresses.
+
+    Widening order matters. Campus DHCP pools can be far larger than the
+    /24 the interface implies: this laptop has been handed 10.1.199.88,
+    10.1.72.245 and 10.1.202.90 on ISCHOOL_IOT on different days, which is
+    a /16 pool. Searching only a /24 or /18 silently misses the robot, so
+    we try progressively wider masks and accept that the last one is slow.
+    """
+    tiers = [[], [], []]            # /24 fast, /18 medium, /16 last resort
     try:
         for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
             ip = info[4][0]
             if ip.startswith("127.") or ip.startswith("169.254."):
                 continue
-            small.append(str(ipaddress.ip_network(ip + "/24", strict=False)))
-            big.append(str(ipaddress.ip_network(ip + "/18", strict=False)))
+            for slot, mask in enumerate((24, 18, 16)):
+                tiers[slot].append(
+                    str(ipaddress.ip_network("%s/%d" % (ip, mask), strict=False)))
     except Exception:
         pass
     out, seen = [], set()
-    for n in small + big:           # fast /24s first, then wide /18s
-        if n not in seen:
-            seen.add(n)
-            out.append(n)
+    for tier in tiers:
+        for n in tier:
+            if n not in seen:
+                seen.add(n)
+                out.append(n)
     return out
 
 
@@ -188,7 +200,7 @@ def _try_sweep():
         hosts = [str(h) for h in ipaddress.ip_network(net).hosts()]
         log("  scanning %s (%d addresses)..." % (net, len(hosts)))
         set_state(message="Scanning %s for Reachy..." % net)
-        with cf.ThreadPoolExecutor(max_workers=256) as ex:
+        with cf.ThreadPoolExecutor(max_workers=500) as ex:
             for ip, ok in zip(hosts, ex.map(is_robot, hosts)):
                 if ok:
                     return ip
@@ -305,11 +317,165 @@ def open_control_app():
     return p
 
 
+# -------------------------------------------------- first-time WiFi setup
+# The robot ships in access-point mode. To hand it credentials we have to
+# leave your network, join its AP, talk to it, then come back. SETUP holds
+# the state of that trip so the browser can follow along.
+
+SETUP = {"stage": "idle", "message": "", "home_ssid": None,
+         "ap_joined": False, "networks": [], "robot": None, "new_ip": None}
+
+
+def setup_set(**kw):
+    with _lock:
+        SETUP.update(kw)
+
+
+def setup_scan():
+    """Find robots over Bluetooth and report whether they need WiFi setup."""
+    setup_set(stage="scanning", message="Looking for robots over Bluetooth...")
+    log("Setup: Bluetooth scan for robots...")
+    found = robot_ops.ble_list(timeout=16.0)
+    out = []
+    for d in found:
+        st = robot_ops.ble_status(d["address"], tries=2)
+        ip = robot_ops.ip_from_ble(st)
+        out.append({
+            "address": d["address"],
+            "rssi": d["rssi"],
+            "network": (st or {}).get("network"),
+            "hotspot": robot_ops.in_hotspot_mode(st),
+            "ip": ip,
+            "needs_setup": robot_ops.in_hotspot_mode(st),
+        })
+        log("  %s -> %s" % (d["address"], (st or {}).get("network")))
+    setup_set(stage="scanned", message="Found %d robot(s)." % len(out),
+              robot=out[0] if out else None)
+    return {"robots": out}
+
+
+def setup_networks():
+    """Join the robot's AP and ask which networks it can see."""
+    home = wifi_setup.current_ssid()
+    setup_set(stage="joining", home_ssid=home,
+              message="Joining the robot's setup network...")
+    log("Setup: home network is %s" % home)
+
+    ok, msg = wifi_setup.ensure_profile(wifi_setup.AP_SSID, wifi_setup.AP_PASS)
+    log("Setup: profile for %s -> %s (%s)" % (wifi_setup.AP_SSID, ok, msg[:120]))
+
+    if not wifi_setup.join(wifi_setup.AP_SSID):
+        setup_set(stage="error",
+                  message="Could not join %s. Is the robot powered on and in "
+                          "setup mode?" % wifi_setup.AP_SSID)
+        if home:
+            wifi_setup.join(home)
+        return {"ok": False, "error": SETUP["message"]}
+
+    setup_set(ap_joined=True, message="On the robot's network. Asking what it sees...")
+    log("Setup: joined %s" % wifi_setup.AP_SSID)
+
+    up, status = wifi_setup.robot_on_ap()
+    if not up:
+        setup_set(stage="error", message="Joined the AP but the robot's daemon "
+                                         "did not answer.")
+        if home:
+            wifi_setup.join(home)
+        return {"ok": False, "error": SETUP["message"]}
+
+    st, nets = wifi_setup.robot_scan()
+    log("Setup: robot sees %d networks" % len(nets))
+    _, wifi_st = wifi_setup.robot_wifi_status()
+    setup_set(stage="picking", networks=nets,
+              message="Pick your network and enter the password.")
+    return {"ok": True, "networks": nets,
+            "daemon": status if isinstance(status, dict) else None,
+            "wifi_status": wifi_st,
+            "home_ssid": home}
+
+
+def setup_connect(ssid, password):
+    """Hand the credentials over. ssid/password go as query params."""
+    if not SETUP.get("ap_joined") or wifi_setup.current_ssid() != wifi_setup.AP_SSID:
+        return {"ok": False, "error": "Not on the robot's network any more. "
+                                      "Run 'Find robots' and try again."}
+    setup_set(stage="sending", message="Sending credentials to the robot...")
+    log("Setup: POST /wifi/connect ssid=%s password=(%d chars)"
+        % (ssid, len(password)))
+    st, res = wifi_setup.send_credentials(ssid, password)
+    log("Setup: robot replied %s %s" % (st, str(res)[:200]))
+    ok = 200 <= st < 300
+    if not ok:
+        setup_set(stage="picking",
+                  message="Robot rejected the credentials (HTTP %s)." % st)
+        return {"ok": False, "status": st, "error": str(res)[:400]}
+    setup_set(stage="switching",
+              message="Accepted. The robot is switching networks...")
+    return {"ok": True, "status": st, "result": res}
+
+
+def setup_finish():
+    """Put this laptop back on its own network, then locate the robot."""
+    home = SETUP.get("home_ssid") or "ISCHOOL_IOT"
+    setup_set(stage="returning", message="Putting this laptop back on %s..." % home)
+    log("Setup: rejoining %s" % home)
+    wifi_setup.join(home, timeout=60)
+    setup_set(ap_joined=False)
+    log("Setup: laptop now on %s" % wifi_setup.current_ssid())
+
+    setup_set(message="Asking the robot for its new address over Bluetooth...")
+    time.sleep(6)
+    new_ip = None
+    for attempt in range(4):
+        found = robot_ops.ble_list(timeout=14.0)
+        for d in found:
+            st = robot_ops.ble_status(d["address"], tries=1)
+            ip = robot_ops.ip_from_ble(st)
+            if ip and not robot_ops.in_hotspot_mode(st):
+                new_ip = ip
+                break
+        if new_ip:
+            break
+        log("  attempt %d: robot still not on the network" % (attempt + 1))
+        time.sleep(8)
+
+    if not new_ip:
+        setup_set(stage="error",
+                  message="Laptop is back online, but the robot has not joined "
+                          "the network yet. Give it a minute and press "
+                          "'Find robots' again.")
+        return {"ok": False, "laptop_ssid": wifi_setup.current_ssid()}
+
+    reachable = is_robot(new_ip)
+    setup_set(stage="done", new_ip=new_ip,
+              message="Robot is on the network at %s." % new_ip)
+    log("Setup: robot is at %s (daemon reachable: %s)" % (new_ip, reachable))
+    if reachable:
+        try:
+            with open(CACHE, "w") as f:
+                f.write(new_ip)
+        except Exception:
+            pass
+        set_state(phase="found", ip=new_ip, method="first-time setup",
+                  message="Connected to Reachy at %s" % new_ip)
+    return {"ok": True, "ip": new_ip, "daemon_reachable": reachable,
+            "laptop_ssid": wifi_setup.current_ssid()}
+
+
 # --------------------------------------------------------------- web server
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass                      # keep the console readable
+
+    def _read_json(self):
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+            if not n:
+                return None
+            return json.loads(self.rfile.read(n).decode("utf-8"))
+        except Exception:
+            return None
 
     def _send(self, code, body, ctype="application/json"):
         if isinstance(body, (dict, list)):
@@ -359,7 +525,29 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     s["robot"] = {"reachable": False}
             s["control_app"] = bool(find_control_app())
+            with _lock:
+                s["setup"] = dict(SETUP)
+            s["laptop_ssid"] = wifi_setup.current_ssid()
             return self._send(200, s)
+
+        if self.path == "/dash/diag":
+            with _lock:
+                ip = STATE.get("ip")
+            if not ip:
+                return self._send(200, {"reachable": False,
+                                        "error": "no robot connected"})
+            d = robot_ops.diagnostics(ip)
+            d["ip"] = ip
+            d["hostname"] = robot_ops.get_hostname(ip)
+            return self._send(200, d)
+
+        if self.path == "/dash/apps":
+            with _lock:
+                ip = STATE.get("ip")
+            if not ip:
+                return self._send(200, {"apps": [], "error": "no robot connected"})
+            return self._send(200, {"apps": robot_ops.apps_list(ip),
+                                    "current": robot_ops.app_status(ip)})
 
         return self._send(404, {"error": "not found"})
 
@@ -380,6 +568,64 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 log("Could not open Reachy Mini Control: %s" % e)
                 return self._send(500, {"error": str(e)})
+
+        # ---------------- first-time WiFi setup ----------------
+        if self.path == "/dash/setup/scan":
+            return self._send(200, setup_scan())
+
+        if self.path == "/dash/setup/networks":
+            return self._send(200, setup_networks())
+
+        if self.path == "/dash/setup/connect":
+            body = self._read_json()
+            ssid = (body or {}).get("ssid")
+            pw = (body or {}).get("password")
+            if not ssid or pw is None:
+                return self._send(400, {"error": "ssid and password required"})
+            return self._send(200, setup_connect(ssid, pw))
+
+        if self.path == "/dash/setup/finish":
+            return self._send(200, setup_finish())
+
+        # ---------------- rename / reboot ----------------
+        if self.path == "/dash/rename":
+            body = self._read_json() or {}
+            ip = body.get("ip") or STATE.get("ip")
+            new = body.get("name")
+            if not ip:
+                return self._send(409, {"error": "no robot connected"})
+            ok, msg = robot_ops.rename_robot(ip, new)
+            log("rename %s -> %s : %s" % (ip, new, msg))
+            return self._send(200 if ok else 400, {"ok": ok, "message": msg})
+
+        if self.path == "/dash/reboot":
+            body = self._read_json() or {}
+            ip = body.get("ip") or STATE.get("ip")
+            if not ip:
+                return self._send(409, {"error": "no robot connected"})
+            ok, msg = robot_ops.reboot_robot(ip)
+            log("reboot %s : %s" % (ip, msg))
+            return self._send(200 if ok else 400, {"ok": ok, "message": msg})
+
+        # ---------------- apps ----------------
+        if self.path == "/dash/apps/start":
+            body = self._read_json() or {}
+            ip = body.get("ip") or STATE.get("ip")
+            name = body.get("name")
+            if not ip or not name:
+                return self._send(400, {"error": "ip and name required"})
+            st, res = robot_ops.app_start(ip, name)
+            log("start app %s -> %s" % (name, st))
+            return self._send(200 if 200 <= st < 300 else 400,
+                              {"ok": 200 <= st < 300, "status": st, "result": res})
+
+        if self.path == "/dash/apps/stop":
+            ip = (self._read_json() or {}).get("ip") or STATE.get("ip")
+            if not ip:
+                return self._send(409, {"error": "no robot connected"})
+            st, res = robot_ops.app_stop(ip)
+            log("stop app -> %s" % st)
+            return self._send(200, {"ok": 200 <= st < 300, "status": st})
 
         if not ip:
             return self._send(409, {"error": "Reachy isn't connected yet."})

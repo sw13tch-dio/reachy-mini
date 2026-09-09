@@ -1,3 +1,4 @@
 # Bluetooth discovery - lets the dashboard ask the robot for its IP directly.
 # Everything else uses the Python standard library.
 bleak>=0.21
+paramiko>=3.0
