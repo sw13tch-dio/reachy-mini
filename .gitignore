@@ -5,3 +5,8 @@ __pycache__/
 *.pyc
 .venv/
 _demo/
+Notes/
+d_err.txt
+d_out.txt
+*_out.txt
+*_err.txt
